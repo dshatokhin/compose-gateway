@@ -1,63 +1,69 @@
 services:
-  # https://theorangeone.net/posts/expose-docker-internal-dns/
-  # coredns:
-  #   image: coredns/coredns:1.12.0
-  #   volumes:
-  #     - ./Corefile:/home/nonroot/Corefile:ro
-  #   ports:
-  #     - 5533:53/udp
-
-  envoy:
-    image: envoyproxy/envoy:v1.32-latest
-    network_mode: host
-    environment:
-      ENVOY_UID: "0"
-      ENVOY_GID: "0"
-    depends_on:
-      controller:
-        condition: service_started
-    # healthcheck:
-    #   test:
-    #     - CMD-SHELL
-    #     - curl --silent --fail http://localhost:8080 || exit 1
-    #   interval: 10s
-    #   retries: 10
-    #   start_period: 10s
-    #   timeout: 5s
+  fix-permissions:
+    image: alpine:latest
+    entrypoint:
+      - /bin/sh
+      - -ec
     command:
-    - envoy
-    - -c
-    - /bootstrap.yaml
+      - |
+        chown -R 65532:65532 /certs
+        chown -R 65532:65532 /config
     volumes:
-      - ./controller/bootstrap.yaml:/bootstrap.yaml
+      - certs:/certs
       - ./private/config:/config
+
+  certgen:
+    image: envoyproxy/gateway:v1.2.3
+    depends_on:
+      fix-permissions:
+        condition: service_completed_successfully
+    command:
+      - certgen
+      - --local
+    volumes:
+      - certs:/tmp/envoy-gateway/certs
+      - ./private/config:/config
+
+  envoy-gateway:
+    image: envoyproxy/gateway:v1.2.3
+    depends_on:
+      certgen:
+        condition: service_completed_successfully
+    command:
+      - server
+      - --config-path
+      - /standalone.yaml
+    volumes:
+      - certs:/tmp/envoy-gateway/certs
+      - ./private/config:/config
+      - ./private/standalone.yaml:/standalone.yaml:ro
+
     # ports:
     #   - 8080:8080
     #   - 8443:8443
     #   - 9901:9901
-
-  controller:
-    image: compose-gateway
     # network_mode: host
-    # dns:
-    #   - 127.0.0.1
-    # healthcheck:
-    #   test:
-    #     - CMD-SHELL
-    #     - '[[ -f /var/run/controller ]] || exit 1'
-    #   interval: 5s
-    #   retries: 10
-    #   start_period: 5s
-    #   timeout: 1s
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./controller:/controller:ro
-      - ./private/config:/config
+    # environment:
+    #   ENVOY_UID: "0"
+    #   ENVOY_GID: "0"
+  #   healthcheck:
+  #     test:
+  #       - CMD-SHELL
+  #       - curl --silent --fail http://localhost:8080 || exit 1
+  #     interval: 10s
+  #     retries: 10
+  #     start_period: 10s
+  #     timeout: 5s
 
-# networks:
-#   net:
-#     driver: host
+  # controller:
+  #   image: compose-gateway
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #     - ./controller:/controller:ro
+  #     - ./private/config:/config
 
 volumes:
+  certs:
+    driver: local
   config:
     driver: local
