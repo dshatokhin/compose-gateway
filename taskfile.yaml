@@ -1,54 +1,25 @@
 version: '3'
 
-tasks:
-  render:
-    vars:
-      CONTAINER: compose-gateway-nginx-2
-      TYPE: cds
-      CONFIG_FILE: private/config/cds.yaml
-      ACTION: add
-      IP_ADDRESSES: '["172.19.0.2","172.20.0.2"]'
-      ANNOTATIONS: >-
-        {
-          "compose.gateway.org/enabled":"true",
-          "compose.gateway.org/fqdn":"test.shatokhin.org",
-          "compose.gateway.org/port":"12700"
-        }
-      CONFIG: '{"resources":[]}'
-      # CONFIG: >-
-      #   {
-      #     "resources":[
-      #       {
-      #         "name":"nginx.shatokhin.org-cluster-80",
-      #         "@type":"type.googleapis.com/envoy.config.cluster.v3.Cluster",
-      #         "type":"STRICT_DNS",
-      #         "load_assignment":{
-      #           "cluster_name":"nginx.shatokhin.org-cluster-80",
-      #           "endpoints":[
-      #             {
-      #               "lb_endpoints":[
-      #                 {
-      #                   "endpoint":{
-      #                     "address":{
-      #                       "socket_address":{
-      #                         "address":"compose-gateway-nginx-1",
-      #                         "port_value":80
-      #                       }}}}]}]}},{
-      #         "name":"apache.shatokhin.org-cluster-80",
-      #         "@type":"type.googleapis.com/envoy.config.cluster.v3.Cluster",
-      #         "type":"STRICT_DNS",
-      #         "load_assignment":{
-      #           "cluster_name":"apache.shatokhin.org-cluster-80",
-      #           "endpoints":[
-      #             {
-      #               "lb_endpoints":[
-      #                 {
-      #                   "endpoint":{
-      #                     "address":{
-      #                       "socket_address":{
-      #                         "address":"compose-gateway-apache-1",
-      #                         "port_value":80
-      #                       }}}}]}]}}]}
+vars:
+  IMAGE_TAG: ghcr.io/dshatokhin/compose-gateway:latest
 
+tasks:
+  build:
+    desc: Builds the container image for compose-gateway
     cmds:
-    - pkl eval controller/main.pkl -p container='{{.CONTAINER}}' -p type='{{.TYPE}}' -p action='{{.ACTION}}' -p configFile='{{.CONFIG_FILE}}' -p annotations='{{.ANNOTATIONS}}' -p ipAddresses='{{.IP_ADDRESSES}}'
+    - docker build -t {{.IMAGE_TAG}} .
+
+  publish:
+    desc: Pushes the container image to the Github Registry
+    cmds:
+    - docker push {{.IMAGE_TAG}}
+
+  render:
+    env:
+      COMPOSE_GATEWAY_PORTS: "80"
+    vars:
+      PAYLOAD:
+        sh: cat private/payload.json
+    cmds:
+    - pkl eval controller/main.pkl -p payload='{{.PAYLOAD}}'
+    # - pkl eval controller/main.pkl -p container='{{.CONTAINER}}' -p type='{{.TYPE}}' -p action='{{.ACTION}}' -p configFile='{{.CONFIG_FILE}}' -p annotations='{{.ANNOTATIONS}}' -p ipAddresses='{{.IP_ADDRESSES}}'
