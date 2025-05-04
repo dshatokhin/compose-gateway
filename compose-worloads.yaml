@@ -1,0 +1,16 @@
+services:
+  nginx:
+    image: nginx
+    annotations:
+      compose.gateway/enabled: "true"
+      compose.gateway/port: "80"
+      compose.gateway/fqdn: nginx.example.org
+      compose.gateway/path: "/"
+
+  apache:
+    image: httpd
+    annotations:
+      compose.gateway/enabled: "true"
+      compose.gateway/port: "80"
+      compose.gateway/fqdn: apache.example.org
+      compose.gateway/path: "/"

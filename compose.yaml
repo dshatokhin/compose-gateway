@@ -1,63 +1,48 @@
 services:
-  # https://theorangeone.net/posts/expose-docker-internal-dns/
-  # coredns:
-  #   image: coredns/coredns:1.12.0
-  #   volumes:
-  #     - ./Corefile:/home/nonroot/Corefile:ro
-  #   ports:
-  #     - 5533:53/udp
+  certgen:
+    image: envoyproxy/gateway:v1.3.2
+    entrypoint:
+      - envoy-gateway
+    command:
+      - certgen
+      - --local
+    volumes:
+      - certs:/tmp
 
-  envoy:
-    image: envoyproxy/envoy:v1.32-latest
-    network_mode: host
-    environment:
-      ENVOY_UID: "0"
-      ENVOY_GID: "0"
+  envoy-gateway:
+    image: envoyproxy/gateway:v1.3.2
     depends_on:
+      certgen:
+        condition: service_completed_successfully
       controller:
         condition: service_started
-    # healthcheck:
-    #   test:
-    #     - CMD-SHELL
-    #     - curl --silent --fail http://localhost:8080 || exit 1
-    #   interval: 10s
-    #   retries: 10
-    #   start_period: 10s
-    #   timeout: 5s
+    network_mode: host
+    user: root
+    entrypoint:
+      - envoy-gateway
     command:
-    - envoy
-    - -c
-    - /bootstrap.yaml
+      - server
+      - --config-path
+      - /config/config.yaml
     volumes:
-      - ./controller/bootstrap.yaml:/bootstrap.yaml
-      - ./private/config:/config
-    # ports:
-    #   - 8080:8080
-    #   - 8443:8443
-    #   - 9901:9901
+      - certs:/tmp
+      - config:/config
 
   controller:
-    image: compose-gateway
-    # network_mode: host
-    # dns:
-    #   - 127.0.0.1
-    # healthcheck:
-    #   test:
-    #     - CMD-SHELL
-    #     - '[[ -f /var/run/controller ]] || exit 1'
-    #   interval: 5s
-    #   retries: 10
-    #   start_period: 5s
-    #   timeout: 1s
+    image: ghcr.io/dshatokhin/compose-gateway:latest
+    environment:
+      COMPOSE_GATEWAY_PORTS: "80"
+      # COMPOSE_GATEWAY_SECURE_PORTS: "443"
+      # COMPOSE_GATEWAY_TLS_CRT_FILE: "/certs/cert.pem"
+      # COMPOSE_GATEWAY_TLS_KEY_FILE: "/certs/key.pem"
+      # COMPOSE_ENVOY_GATEWAY_LOG_LEVEL: debug
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./controller:/controller:ro
-      - ./private/config:/config
-
-# networks:
-#   net:
-#     driver: host
+      - certs:/tmp
+      - config:/config
 
 volumes:
+  certs:
+    driver: local
   config:
     driver: local

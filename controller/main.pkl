@@ -1,51 +1,133 @@
 import "pkl:json"
-import "pkl:yaml"
+import "package://pkg.pkl-lang.org/pkl-k8s/k8s@1.2.1#/api/core/v1/Secret.pkl"
 
-class Annotations {
-  `compose.gateway.org/enabled`: String
-  `compose.gateway.org/port`:    String
-  `compose.gateway.org/https`:   String = "false"
-  `compose.gateway.org/fqdn`:    String
-  `compose.gateway.org/path`:    String = "/"
+const gatewayName:           String = "compose-gateway"
+const gatewayControllerName: String = "gateway.envoyproxy.io/gatewayclass-controller"
+const secretName:            String = "compose-tls-secret"
+
+class Payload {
+  name:        String
+  networks:    List<Any>
+  annotations: Annotations
 }
 
-type: "cds"|"vhds" = read?("prop:type")
-action: "add"|"remove" = read?("prop:action")
+class Annotations {
+  `compose.gateway/enabled`:  String
+  `compose.gateway/port`:     String
+  `compose.gateway/fqdn`:     String
+  `compose.gateway/path`:     String = "/"
+  `compose.gateway/pathType`: String = "PathPrefix"
+}
 
-config = new yaml.Parser {}
-  .parse(read("file:\(read("prop:configFile"))"))
+typealias PortNumber = Int(isBetween(1, 65535))
+typealias Fqdn       = String(length <= 253, matches(Regex("[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*")))
+typealias Path       = String(startsWith("/"))?
+typealias PathType   = "PathPrefix"
 
-container = read?("prop:container")
+// There is probably a clever way to do this
+function toRoute(annotations: Annotations) = new Route {
+  enabled  = annotations.`compose.gateway/enabled`.toBoolean()
+  port     = annotations.`compose.gateway/port`.toInt()
+  fqdn     = annotations.`compose.gateway/fqdn`
+  path     = annotations.`compose.gateway/path`
+  pathType = annotations.`compose.gateway/pathType`
+}
 
-annotations = new json.Parser {}
-  .parse(read?("prop:annotations") ?? "{}")
-  .toTyped(Annotations)
+class Route {
+  enabled:  Boolean
+  port:     PortNumber
+  fqdn:     Fqdn
+  path:     Path       = "/"
+  pathType: PathType   = "PathPrefix"
+}
 
-ipAddresses = new json.Parser {}
-  .parse(read?("prop:ipAddresses") ?? "[]")
+class Container {
+  name:  String
+  ips:   Listing<String>
+  route: Route
+}
 
-updatedResources: Listing<Dynamic> = new {
-  when (type == "cds") {
+configFile:    String  = read?("prop:config")            ?? "config.yaml"
+outputFile:    String  = read?("prop:file")              ?? "resources.yaml"
+payloadString: String  = read?("prop:payload")           ?? "[]"
+init:          Boolean = read?("prop:init")?.toBoolean() ?? false
+
+payload: Listing = new json.Parser {}
+  .parse(payloadString)
+  .toList()
+  .filter((c) -> c.HostConfig.getPropertyOrNull("Annotations")?.getPropertyOrNull("compose.gateway/enabled") == "true")
+  .toListing()
+
+containers: Listing<Container> = new {
+  for (_item in payload) {
+    new Container {
+      name = _item.Name.replaceFirst("/", "")
+      ips = _item.NetworkSettings.Networks
+        .toMap()
+        .fold(List(), (res, _, value) -> res.add(value.IPAddress))
+        .toListing()
+      route = toRoute(_item.HostConfig.Annotations.toTyped(Annotations))
+    }
+  }
+}
+
+output {
+  files {
+    when (init) {
+      [configFile] {
+        value = config
+        renderer = new YamlRenderer { isStream = false }
+      }
+    } else {
+      [outputFile] {
+        value = gateway.toList() + routes.toList() + List(secret.toDynamic())
+        renderer = new YamlRenderer { isStream = true }
+      }
+    }
+  }
+}
+
+routes: Listing = new {
+  for (_c in containers) {
     new {
-      local clusterName = "\(container)-\(annotations.`compose.gateway.org/port`)"
-      name = clusterName
-      `@type` = "type.googleapis.com/envoy.config.cluster.v3.Cluster"
-      type = "STATIC"
-      load_assignment {
-        cluster_name = clusterName
+      apiVersion = "gateway.envoyproxy.io/v1alpha1"
+      kind = "Backend"
+      metadata { name = _c.name }
+      spec {
         endpoints {
+          for (_ip in _c.ips) {
+            new {
+              ip {
+                address = _ip
+                port = _c.route.port.toInt()
+              }
+            }
+          }
+        }
+      }
+    }
+
+    new {
+      apiVersion = "gateway.networking.k8s.io/v1"
+      kind = "HTTPRoute"
+      metadata { name = _c.name }
+      spec {
+        parentRefs { new { name = gatewayName } }
+        hostnames = _c.route.fqdn.split(",").map((it) -> it.trim())
+        rules {
           new {
-            lb_endpoints {
-              for (_ip in ipAddresses) {
-                new {
-                  endpoint {
-                    address {
-                      socket_address {
-                        address = _ip
-                        port_value = annotations.`compose.gateway.org/port`.toInt()
-                      }
-                    }
-                  }
+            backendRefs {
+              new {
+                group = "gateway.envoyproxy.io"
+                kind = "Backend"
+                name = _c.name
+              }
+            }
+            matches {
+              new {
+                path {
+                  type = _c.route.pathType
+                  value = _c.route.path
                 }
               }
             }
@@ -54,56 +136,94 @@ updatedResources: Listing<Dynamic> = new {
       }
     }
   }
-
-  when (type == "vhds") {
-    new {
-      local clusterName = "\(container)-\(annotations.`compose.gateway.org/port`)"
-      name = "compose_gateway/\(annotations.`compose.gateway.org/fqdn`.split(",")[0])"
-      `@type` = "type.googleapis.com/envoy.config.route.v3.VirtualHost"
-      domains = annotations.`compose.gateway.org/fqdn`.split(",").map((it) -> it.trim() + ":80")
-      routes {
-        new {
-          match {
-            prefix = annotations.`compose.gateway.org/path`
-          }
-          route {
-            cluster = clusterName
-          }
-        }
-      }
-    }
-  }
 }
 
-vhdsResources: Listing<Dynamic> = new {
+ports:       List<PortNumber> = read?("env:COMPOSE_GATEWAY_PORTS")?.split(",")?.map((it) -> it.trim().toInt())        ?? List()
+securePorts: List<PortNumber> = read?("env:COMPOSE_GATEWAY_SECURE_PORTS")?.split(",")?.map((it) -> it.trim().toInt()) ?? List()
+
+gateway: Listing = new {
   new {
-    local clusterName = "\(container)-\(annotations.`compose.gateway.org/port`)"
-    name = annotations.`compose.gateway.org/fqdn`
-    domains = new {
-      annotations.`compose.gateway.org/fqdn`
-    }
-    routes {
-      new {
-        match {
-          prefix = annotations.`compose.gateway.org/path`
+    apiVersion = "gateway.networking.k8s.io/v1"
+    kind = "GatewayClass"
+    metadata { name = gatewayName }
+    spec { controllerName = gatewayControllerName }
+  }
+
+  new {
+    apiVersion = "gateway.networking.k8s.io/v1"
+    kind = "Gateway"
+    metadata { name = gatewayName }
+    spec {
+      gatewayClassName = gatewayName
+      listeners {
+        for (_p in ports) {
+          new {
+            name = "http-\(_p)"
+            protocol = "HTTP"
+            port = _p
+          }
         }
-        route {
-          cluster = clusterName
+        for (_s in securePorts) {
+          new {
+            name = "https-\(_s)"
+            protocol = "HTTPS"
+            hostname = "*.shatokhin.local"
+            port = _s
+            tls {
+              mode = "Terminate"
+              certificateRefs {
+                new {
+                  kind = "Secret"
+                  name = "compose-tls-secret"
+                }
+              }
+            }
+          }
         }
       }
     }
   }
 }
 
-updatedConfig = new {
-  when (action == "add") {
-    resources = (
-      config.resources.toList() + updatedResources.toList()
-    ).distinctBy((it) -> it.name)
+gatewayControllerLogLevel: String = read?("env:COMPOSE_ENVOY_GATEWAY_LOG_LEVEL") ?? "info"
+
+config: Dynamic = new {
+  apiVersion = "gateway.envoyproxy.io/v1alpha1"
+  kind = "EnvoyGateway"
+  gateway { controllerName = gatewayControllerName }
+  provider {
+    type = "Custom"
+    custom {
+      resource {
+        type = "File"
+        file {
+          paths {
+            "/config/\(outputFile)"
+          }
+        }
+      }
+      infrastructure {
+        type = "Host"
+        host {}
+      }
+    }
   }
+  logging {
+    level {
+      ["default"] = gatewayControllerLogLevel
+    }
+  }
+  extensionApis { enableBackend = true }
 }
 
-output {
-  value = updatedConfig
-  renderer = new YamlRenderer {}
+crtFile: String = read?("file:\(read?("env:COMPOSE_GATEWAY_TLS_CRT_FILE"))")?.text ?? "no-certificate-provided"
+keyFile: String = read?("file:\(read?("env:COMPOSE_GATEWAY_TLS_KEY_FILE"))")?.text ?? "no-certificate-provided"
+
+secret: Secret = new {
+  metadata { name = secretName }
+  type = "kubernetes.io/tls"
+  data {
+    ["tls.crt"] = crtFile.base64
+    ["tls.key"] = keyFile.base64
+  }
 }
