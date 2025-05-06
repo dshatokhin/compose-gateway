@@ -10,7 +10,7 @@ services:
       - certs:/tmp
 
   envoy-gateway:
-    image: envoyproxy/gateway:v1.3.2
+    image: envoyproxy/gateway:v1.4.0-rc.1
     depends_on:
       certgen:
         condition: service_completed_successfully
@@ -33,13 +33,15 @@ services:
     environment:
       COMPOSE_GATEWAY_PORTS: "80"
       # COMPOSE_GATEWAY_SECURE_PORTS: "443"
+      # COMPOSE_GATEWAY_HOST: "*.example.org"
       # COMPOSE_GATEWAY_TLS_CRT_FILE: "/certs/cert.pem"
       # COMPOSE_GATEWAY_TLS_KEY_FILE: "/certs/key.pem"
-      # COMPOSE_ENVOY_GATEWAY_LOG_LEVEL: debug
+      # COMPOSE_ENVOY_GATEWAY_LOG_LEVEL: info
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - certs:/tmp
       - config:/config
+      # - ./certs:/certs:ro
 
 volumes:
   certs:

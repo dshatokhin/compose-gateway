@@ -140,6 +140,7 @@ routes: Listing = new {
 
 ports:       List<PortNumber> = read?("env:COMPOSE_GATEWAY_PORTS")?.split(",")?.map((it) -> it.trim().toInt())        ?? List()
 securePorts: List<PortNumber> = read?("env:COMPOSE_GATEWAY_SECURE_PORTS")?.split(",")?.map((it) -> it.trim().toInt()) ?? List()
+host:        String           = read?("env:COMPOSE_GATEWAY_HOST") ?? "*"
 
 gateway: Listing = new {
   new {
@@ -167,7 +168,7 @@ gateway: Listing = new {
           new {
             name = "https-\(_s)"
             protocol = "HTTPS"
-            hostname = "*.shatokhin.local"
+            hostname = host
             port = _s
             tls {
               mode = "Terminate"
